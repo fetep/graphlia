@@ -4,6 +4,7 @@ from amqplib import client_0_8 as amqp
 from xdrlib import Unpacker
 import ConfigParser
 import SocketServer
+import socket
 import sys
 import threading
 import time
@@ -65,8 +66,13 @@ class GraphiteAggregator(object):
                 self.last_value[name] = value
                 self.last_time[name] = now
                 return
-            rate = (self.last_value[name] - value) / \
-                   (self.last_time[name] - now)
+            if value < self.last_value[name]:
+                # counter rollover?
+                self.last_value[name] = value
+                self.last_time[name] = now
+                return
+            rate = (value - self.last_value[name]) / \
+                   (now - self.last_time[name])
             self.last_value[name] = value
             self.last_time[name] = now
             value = rate
@@ -98,7 +104,11 @@ class GraphiteAggregator(object):
 
         print "\n".join(output)
         msg = amqp.Message("\n".join(output))
-        self.amqp_chan.basic_publish(msg, exchange=self.amqp_exchange)
+        try:
+            self.amqp_chan.basic_publish(msg, exchange=self.amqp_exchange)
+        except socket.error as (errno, errstr):
+            print >> sys.stderr, "amqp publish problem: %s" % (errstr,)
+            sys.exit(2)
 
     def _stat(self, name, value, now):
         return "%s.%s.%s %f %d" % \
